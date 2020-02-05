@@ -15,7 +15,7 @@ func = import_module(problem_name)
 
 def evaluate(trial,low_b,diff,func_num,dim,trial_f):
     trial_denorm = low_b + trial * diff
-    for i,j in enumerate(func.cec14_test_func(func_num, dim, trial_denorm.reshape(-1))):
+    for i,j in enumerate(func.cec14_test(func_num, dim, trial_denorm.reshape(-1))):
         if j<1e-8+func_num*100:
             trial_f[i]=func_num*100
             return 1
