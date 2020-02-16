@@ -26,24 +26,24 @@ def evaluate(trial,low_b,diff,func_num,dim,trial_f):
 @njit
 def select(trial,trial_f,psize,pop,fitness):
     for j in range(psize):
-        if trial_f[j] < fitness[j]:
+        if trial_f[j] <= fitness[j]:
             fitness[j] = trial_f[j]
             pop[j] = trial[j]
 
 @njit
-def store(trial_f,fitness,pop,A,psize,archive_idx,archive,dfs):
+def store(trial_f,fitness,pop,A,psize,arc_size,archive,dfs):
     for j in range(psize):
         if trial_f[j]<fitness[j]:
             dfs[j]=fitness[j]-trial_f[j]
-            if A>1:
-                if archive_idx >= A:
+            if A>0:
+                arc_size+=1
+                if arc_size > A:
                     archive[np.random.randint(A)] = pop[j]
                 else:
-                    archive[archive_idx] = pop[j]
-            archive_idx+=1
+                    archive[arc_size-1] = pop[j]
         else:
             dfs[j]=0
-    return archive_idx
+    return arc_size
 
 @njit
 def pam_update(dfs,memory_F,memory_C):
@@ -64,7 +64,10 @@ def pam_generate(history_F,history_C,k,H,memory_F,memory_C):
             memory_F[i] = 0.1*np.tan(np.pi*(np.random.rand()-0.5))+mean_F
             if memory_F[i]>0: break
         if memory_F[i]>1: memory_F[i]=1
-        memory_C[i] = 0.1*np.random.randn()+mean_C
+        if mean_C == 0:
+            memory_C[i] = 0
+        else:
+            memory_C[i] = 0.1*np.random.randn()+mean_C
         if memory_C[i]<0: memory_C[i]=0
         if memory_C[i]>1: memory_C[i]=1
 
@@ -77,7 +80,7 @@ def multiple(a,b):
     return a*b
 
 @njit
-def generate(pop,archive,memory_F,memory_C,archive_idx,prate,psize,dim,trial):
+def generate(pop,archive,memory_F,memory_C,arc_size,prate,psize,dim,trial):
     for j in range(psize):
         '''setting F and C'''
         F = memory_F[j]
@@ -85,8 +88,7 @@ def generate(pop,archive,memory_F,memory_C,archive_idx,prate,psize,dim,trial):
 
         '''Binomial crossover'''
         cross_points = np.random.rand(dim) < C
-        if np.sum(cross_points)==0:
-            cross_points[np.random.randint(dim)] = True
+        cross_points[np.random.randint(dim)] = True
         
         '''current-to-pbest/1'''
         pbest = np.random.randint(max(int(psize*prate),1))
@@ -95,8 +97,8 @@ def generate(pop,archive,memory_F,memory_C,archive_idx,prate,psize,dim,trial):
         idxs = np.arange(psize)
         idxs = idxs[idxs!=j]
         r1 = idxs[np.random.randint(psize-1)]
-        idxs = np.hstack((idxs[idxs!=r1],np.arange(psize,psize+archive_idx)))
-        r2 = idxs[np.random.randint(psize-2+archive_idx)]
+        idxs = np.hstack((idxs[idxs!=r1],np.arange(psize,psize+arc_size)))
+        r2 = idxs[np.random.randint(psize-2+arc_size)]
         if r2 >= psize:
             d2 = pop[r1]-archive[r2-psize]
         else:
@@ -122,7 +124,7 @@ def de(func_num, bounds, psize, maxevals, prate=0.1, Fini=0.5, Cini=0.5, H=10, a
     '''Initialize archive'''
     arc_rate = 2
     A=psize*arc_rate
-    archive = np.zeros((A,dim)); archive_idx = 0
+    archive = np.zeros((A,dim)); arc_size = 0
     '''Initialize parameter adaptation arrays'''
     k = 0
     memory_F, memory_C  = np.full(psize,Fini), np.full(psize,Cini)
@@ -130,7 +132,16 @@ def de(func_num, bounds, psize, maxevals, prate=0.1, Fini=0.5, Cini=0.5, H=10, a
     pam_generate(history_F,history_C,k,H,memory_F,memory_C)
     while nofe<maxevals:
         gen += 1
-        generate(pop,archive,memory_F,memory_C,archive_idx,prate,psize,dim,trial)
+        '''Sort'''
+        f_sorted = np.argsort(fitness)
+        pop = pop[f_sorted]
+        fitness = fitness[f_sorted]
+        '''Populationsize reduction'''
+        #psize = int(initial_psize - nofe*(initial_psize-4)/maxnofe)
+        trial,trial_f,dfs = trial[:psize], trial_f[:psize], dfs[:psize]
+        memory_F,memory_C = memory_F[:psize], memory_C[:psize]
+        '''Cur-to-pbest/1bin with Archive'''
+        generate(pop,archive,memory_F,memory_C,arc_size,prate,psize,dim,trial)
         '''Evaluation'''
         ret = evaluate(trial,low_b,diff,func_num,dim,trial_f)
         nofe += psize
@@ -138,9 +149,9 @@ def de(func_num, bounds, psize, maxevals, prate=0.1, Fini=0.5, Cini=0.5, H=10, a
             yield 1,nofe, np.min(trial_f)-func_num*100
             if ret==1: break
         '''Archive'''
-        ret = store(trial_f,fitness,pop,A,psize,archive_idx,archive,dfs)
-        nof_success_trials = ret - archive_idx
-        if ret<=A: archive_idx = ret
+        ret = store(trial_f,fitness,pop,A,psize,arc_size,archive,dfs)
+        nof_success_trials = ret - arc_size
+        arc_size = min(ret, A)
         '''Parameter Adaptation'''
         if nof_success_trials>0:
             if history_C[k]==0:
@@ -151,15 +162,8 @@ def de(func_num, bounds, psize, maxevals, prate=0.1, Fini=0.5, Cini=0.5, H=10, a
             k = (k+1)%H
         pam_generate(history_F,history_C,k-alpha,beta,memory_F,memory_C)
         #pam_generate(history_F,history_C,k-1,H,memory_F,memory_C)  # SHADE
-        '''Selection and Sort'''
+        '''generation alternation'''
         select(trial,trial_f,psize,pop,fitness)
-        f_sorted = np.argsort(fitness)
-        pop = pop[f_sorted]
-        fitness = fitness[f_sorted]
-        '''Populationsize reduction'''
-        #psize = int(initial_psize - nofe*(initial_psize-4)/maxnofe)
-        trial,trial_f,dfs = trial[:psize], trial_f[:psize], dfs[:psize]
-        memory_F,memory_C = memory_F[:psize], memory_C[:psize]
 
 def solve(args):
     func_num,evals,seed = args
